@@ -4,7 +4,7 @@ set(Boost_USE_MULTITHREADED ON)
 set(Boost_USE_STATIC_RUNTIME OFF)
 
 project (data_load)
-find_package(Boost COMPONENTS system iostreams filesystem REQUIRED)
+find_package(Boost COMPONENTS system regex iostreams filesystem REQUIRED)
 if(NOT Boost_FOUND)
     return()    
 else()
