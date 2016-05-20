@@ -12,7 +12,6 @@
 
 #include <boost/iostreams/device/file_descriptor.hpp>
 #include <boost/iostreams/device/mapped_file.hpp>
-#include <boost/iostreams/stream_buffer.hpp>
 #include <boost/range/iterator_range.hpp>
 #include <boost/iostreams/stream.hpp>
 #include <boost/regex.hpp>
@@ -30,15 +29,19 @@ const char* DataLoad::m_util[] = { "md5sum ",
                                  };
 const string DataLoad::m_releaseName = "Release";
 const string DataLoad::m_packages    = "Packages";
-const string DataLoad::m_ubuntuArchive = "ru.archive.ubuntu.com/ubuntu/dists/";  //ru.archive.ubuntu.com/ubuntu/dists
+//ru.archive.ubuntu.com/ubuntu/dists
+const string DataLoad::m_ubuntuArchive = "ru.archive.ubuntu.com/ubuntu/dists/";
 
-DataLoad::DataLoad(const string &packageName, const std::string &pathPackageIntercept):
-        m_packageName(packageName),m_pathPackageIntercept(pathPackageIntercept)
+DataLoad::DataLoad(const std::map<std::string, fullPackageData> &interceptData):
+                   m_interceptData(interceptData)
 {
 }
+
 bool DataLoad::Load()
 {
-    string command = string("wget -nv -R index.html -r --no-parent -A 'Packages.*','Release' > /dev/null 2>&1 ") + m_ubuntuArchive;
+    string command = string("wget -nv -R index.html -r --no-parent \
+                             -A 'Packages.*','Release' > /dev/null 2>&1 ") + 
+                     m_ubuntuArchive;
     cout << "Wait while all data will be loaded." << endl;
     if (system(command.c_str()))
     {
@@ -50,14 +53,18 @@ bool DataLoad::Load()
     return true;
 }
 
-bool DataLoad::GetFileInfo(const string &fileName, packageInfo &packageData, EPackageInfo info)
+bool DataLoad::GetFileInfo(const string &fileName, packageInfo &packageData, 
+                           EPackageInfo info)
 {
     if (info == eAllField)
     {
-        for (int i= 0; i < eAllField; ++i)
+        for (int i = 0; i < eAllField; ++i)
         {
-           if (!GetFileInfo(fileName, packageData, static_cast<DataLoad::EPackageInfo>(i)))
-               return false;
+            if (!GetFileInfo(fileName, packageData, 
+                            static_cast<DataLoad::EPackageInfo>(i)))
+            {
+                return false;
+            }
         }
         return true;
     }
@@ -77,19 +84,23 @@ bool DataLoad::GetFileInfo(const string &fileName, packageInfo &packageData, EPa
         }
     }
 
+    using fdWrapper = boost::iostreams::stream_buffer<
+                      boost::iostreams::file_descriptor_source>;
     string command = string{DataLoad::m_util[info]} + fileName;
     FILE *fp;
-    fp =popen(command.c_str(),"r");
-    boost::iostreams::stream_buffer<boost::iostreams::file_descriptor_source> fpstream(fileno(fp), boost::iostreams::never_close_handle);
-    std::istream in (&fpstream);
+    fp = popen(command.c_str(), "r");
 
+    char buffer[100];
     string line;
-    if (in)
+    int element_count;
+    while (fgets(buffer, sizeof buffer, fp) != NULL)
     {
-        getline(in, line);
+        line += buffer;
     }
-    /* close */
+
     pclose(fp);
+
+
 
     if (line.empty())
     {
@@ -98,7 +109,7 @@ bool DataLoad::GetFileInfo(const string &fileName, packageInfo &packageData, EPa
     std::size_t found = line.find(" ");
     if (found == std::string::npos)
     {
-      return false;
+        return false;
     }
     line = line.substr(0, found);
     if (info == eMD5Sum)
@@ -116,19 +127,13 @@ bool DataLoad::GetFileInfo(const string &fileName, packageInfo &packageData, EPa
     return true;
 }
 
-DataLoad::packageInfo DataLoad::GetPackageInfo()
-{
-    return m_packageInfo;
-}
-void DataLoad::SetPackageInfo(const packageInfo &packageData)
-{
-    m_packageInfo = packageData;
-}
-bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath, const string &rootPath, packageMap &result)
+bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath, 
+                                 const string &rootPath, packageMap &result)
 {
     string command;
     packageInfo info;
-    cout << absolute(packagePath) << " and extension is" << packagePath.extension() << endl;
+    cout << absolute(packagePath) << " and extension is" 
+         << packagePath.extension() << endl;
     if (packagePath.extension().string() == ".bz2")
     {
         command = string("bunzip2 -f > /dev/null 2>&1 ") + packagePath.string();
@@ -168,10 +173,12 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath, con
         system(command.c_str());
 
         GetFileInfo(bz2Package,info);
-        result.insert(pair<string, packageInfo>(bz2Package.substr(rootPath.length() + 1), info));
+        result.insert(pair<string, packageInfo>(
+                      bz2Package.substr(rootPath.length() + 1), info));
 
         GetFileInfo(gzPackage,info);
-        result.insert(pair<string, packageInfo>(gzPackage.substr(rootPath.length() + 1), info));
+        result.insert(pair<string, packageInfo>(
+                      gzPackage.substr(rootPath.length() + 1), info));
 
         return false;
     }
@@ -180,23 +187,34 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath, con
     stream<mapped_file> is(mapPackege, std::ios_base::binary);
     string line;
     bool find = false;
+    boost::regex e ("^Package: (.*)");
     while(getline(is, line))
     {
-        if (line.find(string{"Package: "} + m_packageName) != std::string::npos)
+        boost::smatch match;
+
+        if (boost::regex_match(line, match, e) && m_interceptData.find(match[1]) 
+            != m_interceptData.end())
         {
+            string matchResult = match[1]; //NEED !!!!!
             boost::regex findString("^Size: .*");
             while(getline(is, line))
             {
-                cout << line << endl;
                 if (boost::regex_match(line, findString))
                 {
                     is.seekp(-(line.length() + 1), ios_base::cur);
                     // check then length insert the same
-                    string size = string{"Size: "} + get<eSize>(m_packageInfo);
+
+                    string size = string{"Size: "} + 
+                               get<eSize>(m_interceptData[matchResult].second);
                     int diff = line.length() - size.length();
-                    is << size                                         << endl;
-                    is << "MD5sum: " << get<eMD5Sum>(m_packageInfo)    << endl;
-                    is << "SHA1: "   << get<eSHA1Sum>(m_packageInfo)   << endl;
+                    is << size                                                           
+                       << endl;
+                    is << "MD5sum: " 
+                       << get<eMD5Sum>(m_interceptData[matchResult].second)    
+                       << endl;
+                    is << "SHA1: "   
+                       << get<eSHA1Sum>(m_interceptData[matchResult].second)   
+                       << endl;
                     int length;
                     if (diff)
                     {
@@ -209,7 +227,9 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath, con
                         }
                         is.seekp(length, ios_base::beg);
                     }
-                    is << "SHA256: " << get<eSHA256Sum>(m_packageInfo) << endl;
+                    is << "SHA256: " 
+                       << get<eSHA256Sum>(m_interceptData[matchResult].second) 
+                       << endl;
                     if (diff > 0)
                     {
                         is << line << string(diff, '!') << endl;
@@ -218,22 +238,24 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath, con
                     {
                         is << line.substr(0, line.length() + diff) << endl;
                     }
-                    cout << "Package:" << m_packageName << " modified in " <<  absolute(packagePath.parent_path())
+                    cout << "Package:" << match[1] << " modified in "
+                         <<  absolute(packagePath.parent_path())
                          << " directory" << endl;
                     find = true;
                     break;
                 }
             }
-            break;
         }
     }
     if (!find)
     {
-        cout << "Package:" << m_packageName << " not find in " <<  absolute(packagePath.parent_path())
-             << " directory" << endl;
+        cout << "Packages not find in " 
+        <<  absolute(packagePath.parent_path())
+        << " directory" << endl;
     }
     GetFileInfo(filePath.string(),info);
-    result.insert(pair<string, packageInfo>(filePath.string().substr(rootPath.length() + 1), info));
+    result.insert(pair<string, packageInfo>(filePath.string().
+                  substr(rootPath.length() + 1), info));
     command = string("bzip2 -f -k > /dev/null 2>&1 ") + filePath.string();
     system(command.c_str());
     command = string("gzip -f > /dev/null 2>&1 ") +  filePath.string();
@@ -241,14 +263,18 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath, con
 
 
     GetFileInfo(bz2Package,info);
-    result.insert(pair<string, packageInfo>(bz2Package.substr(rootPath.length() + 1), info));
+    result.insert(pair<string, packageInfo>(
+                  bz2Package.substr(rootPath.length() + 1), info));
 
     GetFileInfo(gzPackage,info);
-    result.insert(pair<string, packageInfo>(gzPackage.substr(rootPath.length() + 1), info));
+    result.insert(pair<string, packageInfo>(gzPackage.
+                  substr(rootPath.length() + 1), info));
 
     return true;
 }
-bool DataLoad::ChangeReleaseFile(const boost::filesystem::path& rootPath,packageMap &result)
+
+bool DataLoad::ChangeReleaseFile(const boost::filesystem::path& rootPath,
+                                 packageMap &result)
 {
     path releasePath(rootPath / m_releaseName);
     if (!exists(releasePath) || boost::filesystem::is_empty(releasePath))
@@ -273,15 +299,21 @@ bool DataLoad::ChangeReleaseFile(const boost::filesystem::path& rootPath,package
             is.seekg(-(line.length() + 1), ios_base::cur);
             if ((n / result.size()) == 0)
             {
-                is << " " << get<eMD5Sum>(result[modifiedString]) << setw(17) << get<eSize>(result[modifiedString]) << " " << modifiedString << endl;
+                is << " " << get<eMD5Sum>(result[modifiedString]) 
+                   << setw(17) << get<eSize>(result[modifiedString]) 
+                   << " " << modifiedString << endl;
             }
             if ((n / result.size()) == 1)
             {
-                is << " " << get<eSHA1Sum>(result[modifiedString]) << setw(17) << get<eSize>(result[modifiedString]) << " " << modifiedString << endl;
+                is << " " << get<eSHA1Sum>(result[modifiedString]) 
+                   << setw(17) << get<eSize>(result[modifiedString]) 
+                   << " " << modifiedString << endl;
             }
             if ((n / result.size()) == 2)
             {
-                is << " " << get<eSHA256Sum>(result[modifiedString]) << setw(17) << get<eSize>(result[modifiedString]) << " " << modifiedString << endl;
+                is << " " << get<eSHA256Sum>(result[modifiedString]) 
+                   << setw(17) << get<eSize>(result[modifiedString]) 
+                   << " " << modifiedString << endl;
             }
             ++n;
         }
@@ -297,12 +329,14 @@ void DataLoad::Worker()
         string version;
         {
             boost::lock_guard<boost::mutex> lock(m_mutex);
-            if(m_workQueue.empty())
+            if (m_workQueue.empty())
             {
                 break;
             }
-                version = m_workQueue.front();
-                m_workQueue.pop();
+
+            version = m_workQueue.front();
+            m_workQueue.pop();
+    
         }
         path versionPath(version);
         cout << "Thread: " << boost::this_thread::get_id() << " start" << endl;
@@ -317,12 +351,15 @@ void DataLoad::Worker()
                 file != boost::filesystem::recursive_directory_iterator();
                 ++file )
         {
-            if (boost::regex_match(file->path().filename().string(), findPackages))
+            if (boost::regex_match(file->path().filename().string(), 
+                                   findPackages))
             {
-                cout << file->path().string().substr(versionPath.string().length() + 1) << endl;
+                cout << file->path().string()
+                        .substr(versionPath.string().length() + 1) << endl;
                 cout << file->path().root_path() << endl;
                 cout << file->path().relative_path() << endl;
-                ChangePackageFile(file->path().string(), versionPath.string(), packageHashs);
+                ChangePackageFile(file->path().string(), 
+                                  versionPath.string(), packageHashs);
                 file.pop();
             }
         }
@@ -342,10 +379,24 @@ void DataLoad::Worker()
 
 void DataLoad::GiveWorkerJob()
 {
-    if(!GetFileInfo(m_pathPackageIntercept, m_packageInfo))
+    if (m_interceptData.empty())
     {
+        cout << "Data for intercept empty. Nothing change" << endl;
         return;
     }
+    for (auto &record: m_interceptData)
+    {
+        packageInfo info;
+        if(!GetFileInfo(record.second.first, info))
+        {
+            cout << "Error: Get file size and hash " 
+                 << record.second.first << endl;
+            return;
+        }
+        record.second.second = move(info);
+    }
+
+    return;
 
     path archivePath(m_ubuntuArchive);
     if (!exists(archivePath) || boost::filesystem::is_empty(archivePath))
@@ -354,21 +405,29 @@ void DataLoad::GiveWorkerJob()
         return;
     }
 
-    for(const auto& dir: boost::make_iterator_range(directory_iterator(archivePath), {}))
+    for(const auto& dir: boost::make_iterator_range(
+                         directory_iterator(archivePath), {}))
     {
         m_workQueue.push(dir.path().string());
     }
-    for (unsigned int i = 0; i < (boost::thread::hardware_concurrency() / 2u); ++i)
+    for (unsigned int i = 0; i < (boost::thread::hardware_concurrency() / 2u);
+         ++i)
     {
         m_threads.add_thread(new boost::thread(bind(&DataLoad::Worker, this)));
     }
     m_threads.join_all();
 }
+
 int main()
 {
-    // first param name Package you wand intercept, second param path file on what you want intercept
-    DataLoad intercept("firefox", "mc_4.7.0-1ubuntu2_i386.deb");
+    // first param name Package you wand intercept, 
+    // second param path file on what you want intercept
+    std::string packet = "mc_4.7.0-1ubuntu2_i386.deb";
+    DataLoad::fullPackageData test_data{packet, DataLoad::packageInfo{}};
+    std::map<std::string, DataLoad::fullPackageData> interceptData;
+    interceptData.emplace(std::make_pair(std::string("firefox"), test_data));
+    DataLoad intercept(interceptData);
     intercept.Load();
-    intercept.GiveWorkerJob();
+    //intercept.GiveWorkerJob();
     return 0;
 }
