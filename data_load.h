@@ -25,6 +25,13 @@ public:
         eSize,
         eAllField
     };
+
+    enum EArchiveOperataion
+    {
+        eCompress,
+        eDecompress
+    };
+
     typedef std::tuple<std::string, std::string,
                        std::string, std::string> packageInfo;
     typedef std::pair<std::string, packageInfo>  fullPackageData;
@@ -53,10 +60,17 @@ private:
     // second Path to file, on want intercept 
     std::map<std::string,
              fullPackageData>           m_interceptData;
+    // map with archive type, compress and decompress command
+    std::map<std::string,
+             std::pair<std::string, 
+                       std::string>>    m_archivesType;
     boost::thread_group                 m_threads;
     std::queue<std::string>             m_workQueue;
     boost::mutex                        m_mutex;
 
+    void RestoreArchive(const std::string& filePath, const std::string &rootPath,
+                        const std::vector<std::string> &extensions,
+                        packageMap &result);
     // change Package.gz and Package.bz2
     bool ChangePackageFile(const boost::filesystem::path &packagePath,
                            const std::string &rootPath, packageMap &result);

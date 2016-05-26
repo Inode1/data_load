@@ -9,19 +9,16 @@
 #include <iostream>
 #include <utility>
 #include <iomanip>
+#include <fstream>
 
-#include <boost/iostreams/device/file_descriptor.hpp>
-#include <boost/iostreams/device/mapped_file.hpp>
-#include <boost/range/iterator_range.hpp>
-#include <boost/iostreams/stream.hpp>
-#include <boost/regex.hpp>
 #include <boost/algorithm/string/erase.hpp>
+#include <boost/range/iterator_range.hpp>
+#include <boost/regex.hpp>
 
 #include "data_load.h"
 
 using namespace std;
 using namespace boost::filesystem;
-using namespace boost::iostreams;
 
 const char* DataLoad::m_util[] = { "md5sum ",
                                    "sha1sum ",
@@ -35,6 +32,19 @@ const string DataLoad::m_ubuntuArchive = "ru.archive.ubuntu.com/ubuntu/dists/";
 DataLoad::DataLoad(const std::map<std::string, fullPackageData> &interceptData):
                    m_interceptData(interceptData)
 {
+    // archives type
+    m_archivesType.emplace(std::make_pair(std::string{".bz2"}, 
+                            std::make_pair(std::string{"bzip2 -f -k > /dev/null 2>&1 "}, 
+                                           std::string{"bunzip2 -f > /dev/null 2>&1 "})));
+
+
+    m_archivesType.emplace(std::make_pair(std::string{".gz"}, 
+                            std::make_pair(std::string{"gzip -f > /dev/null 2>&1 "}, 
+                                           std::string{"gunzip -f > /dev/null 2>&1 "})));
+    
+    m_archivesType.emplace(std::make_pair(std::string{".xz"}, 
+                            std::make_pair(std::string{"xz -z -f > /dev/null 2>&1 "}, 
+                                           std::string{"xz -d -f > /dev/null 2>&1 "})));
 }
 
 bool DataLoad::Load()
@@ -84,23 +94,18 @@ bool DataLoad::GetFileInfo(const string &fileName, packageInfo &packageData,
         }
     }
 
-    using fdWrapper = boost::iostreams::stream_buffer<
-                      boost::iostreams::file_descriptor_source>;
     string command = string{DataLoad::m_util[info]} + fileName;
     FILE *fp;
     fp = popen(command.c_str(), "r");
 
     char buffer[100];
     string line;
-    int element_count;
     while (fgets(buffer, sizeof buffer, fp) != NULL)
     {
         line += buffer;
     }
 
     pclose(fp);
-
-
 
     if (line.empty())
     {
@@ -127,64 +132,74 @@ bool DataLoad::GetFileInfo(const string &fileName, packageInfo &packageData,
     return true;
 }
 
+void DataLoad::RestoreArchive(const string& filePath, const string &rootPath,
+                              const std::vector<std::string> &extensions,
+                              packageMap &result)
+{
+    packageInfo info;
+    for (const auto& extension: extensions)
+    {
+        system((get<eCompress>(m_archivesType[extension]) + 
+                               filePath).c_str());        
+        std::string fullPath{filePath + extension};
+        GetFileInfo(fullPath, info);
+        result.insert(pair<string, packageInfo>(
+                      fullPath.substr(rootPath.length() + 1), info));
+    }
+} 
+
 bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath, 
                                  const string &rootPath, packageMap &result)
 {
-    string command;
-    packageInfo info;
-    cout << absolute(packagePath) << " and extension is" 
-         << packagePath.extension() << endl;
-    if (packagePath.extension().string() == ".bz2")
+    // iterate in this directory and find all Packages Archives extension
+    std::vector<std::string> extensions;
+    std::cout << packagePath.string() << std::endl; 
+    for (const auto& directoryFile: directory_iterator(packagePath))
     {
-        command = string("bunzip2 -f > /dev/null 2>&1 ") + packagePath.string();
+        if (is_regular_file(directoryFile.path()) && directoryFile.path().has_extension())
+        {
+            std::string extension(directoryFile.path().extension().string());
+            if (m_archivesType.find(extension) != m_archivesType.end())
+            {
+                std::cout << "Ext" << directoryFile.path().string() << std::endl;
+                extensions.push_back(std::move(extension));
+            }
+        }
     }
-    else if (packagePath.extension().string() == ".gz")
+
+    // no package files
+    if (extensions.empty())
     {
-        command = string("gunzip -f > /dev/null 2>&1 ") + packagePath.string();
+        return true;
     }
-    else
+
+    path filePath(packagePath / m_packages);
+    std::cout << (get<eDecompress>(m_archivesType[extensions[0]]) + 
+                filePath.string() + 
+                extensions[0]) << std::endl;
+    if (system((get<eDecompress>(m_archivesType[extensions[0]]) + 
+                filePath.string() + 
+                extensions[0]).c_str()))
     {
+        cout << "Modified:" << (filePath.string() + extensions[0]) << " Failed" << endl;
         return false;
     }
 
-    cout << "Unzip:" << packagePath << " Start" << endl;
-    if (system(command.c_str()))
-    {
-        cout << "Modified:" << absolute(packagePath) << " Failed" << endl;
-        return false;
-    }
+    cout << "Unzip:" << (filePath.string() + extensions[0]) << " Finished" << endl;
 
-    cout << "Unzip:" << absolute(packagePath) << " Finished" << endl;
-
-    path filePath(packagePath.parent_path() / m_packages);
-    string bz2Package = filePath.string() + ".bz2";
-    string gzPackage  = filePath.string() + ".gz";
     if (!exists(filePath))
     {
-        cout << absolute(packagePath) << " not exist" << endl;
+        cout << absolute(filePath) << " not exist" << endl;
         return false;
     }
     if (boost::filesystem::is_empty(filePath))
     {
         //restore
-        command = string("bzip2 -f -k > /dev/null 2>&1 ") + filePath.string();
-        system(command.c_str());
-        command = string("gzip -f > /dev/null 2>&1 ") +  filePath.string();
-        system(command.c_str());
-
-        GetFileInfo(bz2Package,info);
-        result.insert(pair<string, packageInfo>(
-                      bz2Package.substr(rootPath.length() + 1), info));
-
-        GetFileInfo(gzPackage,info);
-        result.insert(pair<string, packageInfo>(
-                      gzPackage.substr(rootPath.length() + 1), info));
-
+        RestoreArchive(filePath.string(), rootPath, extensions, result);
         return false;
     }
 
-    mapped_file mapPackege(filePath);
-    stream<mapped_file> is(mapPackege, std::ios_base::binary);
+    std::fstream is(filePath.string());
     string line;
     bool find = false;
     boost::regex e ("^Package: (.*)");
@@ -195,7 +210,7 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath,
         if (boost::regex_match(line, match, e) && m_interceptData.find(match[1]) 
             != m_interceptData.end())
         {
-            string matchResult = match[1]; //NEED !!!!!
+            string matchResult = match[1];
             boost::regex findString("^Size: .*");
             while(getline(is, line))
             {
@@ -253,22 +268,7 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath,
         <<  absolute(packagePath.parent_path())
         << " directory" << endl;
     }
-    GetFileInfo(filePath.string(),info);
-    result.insert(pair<string, packageInfo>(filePath.string().
-                  substr(rootPath.length() + 1), info));
-    command = string("bzip2 -f -k > /dev/null 2>&1 ") + filePath.string();
-    system(command.c_str());
-    command = string("gzip -f > /dev/null 2>&1 ") +  filePath.string();
-    system(command.c_str());
-
-
-    GetFileInfo(bz2Package,info);
-    result.insert(pair<string, packageInfo>(
-                  bz2Package.substr(rootPath.length() + 1), info));
-
-    GetFileInfo(gzPackage,info);
-    result.insert(pair<string, packageInfo>(gzPackage.
-                  substr(rootPath.length() + 1), info));
+    RestoreArchive(filePath.string(), rootPath, extensions, result);
 
     return true;
 }
@@ -283,8 +283,7 @@ bool DataLoad::ChangeReleaseFile(const boost::filesystem::path& rootPath,
         return false;
     }
 
-    mapped_file mapRelease(releasePath);
-    stream<mapped_file> is(mapRelease, std::ios_base::binary);
+    std::fstream is(releasePath.string());
     string line;
     // TO-DO:: bad performance.
     cout << "++++++++++++++++++++++++++++++++++++++++++++++++++++++" << endl;
@@ -358,7 +357,7 @@ void DataLoad::Worker()
                         .substr(versionPath.string().length() + 1) << endl;
                 cout << file->path().root_path() << endl;
                 cout << file->path().relative_path() << endl;
-                ChangePackageFile(file->path().string(), 
+                ChangePackageFile(file->path().parent_path(), 
                                   versionPath.string(), packageHashs);
                 file.pop();
             }
@@ -396,8 +395,6 @@ void DataLoad::GiveWorkerJob()
         record.second.second = move(info);
     }
 
-    return;
-
     path archivePath(m_ubuntuArchive);
     if (!exists(archivePath) || boost::filesystem::is_empty(archivePath))
     {
@@ -427,7 +424,7 @@ int main()
     std::map<std::string, DataLoad::fullPackageData> interceptData;
     interceptData.emplace(std::make_pair(std::string("firefox"), test_data));
     DataLoad intercept(interceptData);
-    intercept.Load();
-    //intercept.GiveWorkerJob();
+    //intercept.Load();
+    intercept.GiveWorkerJob();
     return 0;
 }

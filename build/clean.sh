@@ -2,5 +2,5 @@ rm -r CMakeFiles
 rm Makefile
 rm cmake_install.cmake
 rm CMakeCache.txt
-rm control_system
+rm data_load
 rm *.log
