@@ -7,12 +7,12 @@
 #define DATA_LOAD_H_
 
 #include <string>
-#include <mutex>
 #include <tuple>
 #include <queue>
 #include <map>
 
 #include <boost/thread/thread.hpp>
+#include <boost/thread/mutex.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/format.hpp>
 
@@ -69,7 +69,7 @@ private:
                        boost::format>>  m_archivesType;
     boost::thread_group                 m_threads;
     std::queue<std::string>             m_workQueue;
-    std::mutex                          m_mutex;
+    boost::mutex                        m_mutex;
 
     void RestoreArchive(const std::string& filePath, const std::string &rootPath,
                         const std::vector<std::string> &extensions,
