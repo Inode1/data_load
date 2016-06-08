@@ -7,13 +7,14 @@
 #define DATA_LOAD_H_
 
 #include <string>
+#include <mutex>
 #include <tuple>
 #include <queue>
 #include <map>
 
 #include <boost/thread/thread.hpp>
-#include <boost/thread/mutex.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/format.hpp>
 
 class DataLoad {
 public:
@@ -55,18 +56,20 @@ private:
     static const char*                  m_util[];
     static const std::string            m_ubuntuArchive;
     static const std::string            m_releaseName;
+    static const std::string            m_inRelease;
     static const std::string            m_packages;
+    static const std::string            m_hashDirectory;
     // First name Package that need to intercept, 
     // second Path to file, on want intercept 
     std::map<std::string,
              fullPackageData>           m_interceptData;
     // map with archive type, compress and decompress command
     std::map<std::string,
-             std::pair<std::string, 
-                       std::string>>    m_archivesType;
+             std::pair<boost::format, 
+                       boost::format>>  m_archivesType;
     boost::thread_group                 m_threads;
     std::queue<std::string>             m_workQueue;
-    boost::mutex                        m_mutex;
+    std::mutex                          m_mutex;
 
     void RestoreArchive(const std::string& filePath, const std::string &rootPath,
                         const std::vector<std::string> &extensions,

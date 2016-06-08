@@ -24,8 +24,10 @@ const char* DataLoad::m_util[] = { "md5sum ",
                                    "sha1sum ",
                                    "sha256sum "
                                  };
-const string DataLoad::m_releaseName = "Release";
-const string DataLoad::m_packages    = "Packages";
+const string DataLoad::m_releaseName   = "Release";
+const string DataLoad::m_packages      = "Packages";
+const string DataLoad::m_inRelease     = "InRelease";
+const string DataLoad::m_hashDirectory = "by-hash";
 //ru.archive.ubuntu.com/ubuntu/dists
 const string DataLoad::m_ubuntuArchive = "ru.archive.ubuntu.com/ubuntu/dists/";
 
@@ -34,17 +36,20 @@ DataLoad::DataLoad(const std::map<std::string, fullPackageData> &interceptData):
 {
     // archives type
     m_archivesType.emplace(std::make_pair(std::string{".bz2"}, 
-                            std::make_pair(std::string{"bzip2 -f -k > /dev/null 2>&1 "}, 
-                                           std::string{"bunzip2 -f > /dev/null 2>&1 "})));
+                            std::make_pair(boost::format{"bzip2 -f -k > /dev/null 2>&1 %1%"}, 
+                                           boost::format{"bunzip2 -f -k > /dev/null 2>&1 \
+                                                          < %1%.bz2 > %1%"})));
 
 
     m_archivesType.emplace(std::make_pair(std::string{".gz"}, 
-                            std::make_pair(std::string{"gzip -f > /dev/null 2>&1 "}, 
-                                           std::string{"gunzip -f > /dev/null 2>&1 "})));
+                            std::make_pair(boost::format{"gzip -f > /dev/null 2>&1 < %1% > %1%.gz"}, 
+                                           boost::format{"gunzip -f > /dev/null 2>&1 \
+                                                          < %1%.gz > %1%"})));
     
     m_archivesType.emplace(std::make_pair(std::string{".xz"}, 
-                            std::make_pair(std::string{"xz -z -f > /dev/null 2>&1 "}, 
-                                           std::string{"xz -d -f > /dev/null 2>&1 "})));
+                            std::make_pair(boost::format{"xz -z -k -f > /dev/null 2>&1 %1%"}, 
+                                           boost::format{"xz -d -f > /dev/null 2>&1 \
+                                                          < %1%.xz > %1%"})));
 }
 
 bool DataLoad::Load()
@@ -136,16 +141,28 @@ void DataLoad::RestoreArchive(const string& filePath, const string &rootPath,
                               const std::vector<std::string> &extensions,
                               packageMap &result)
 {
+    if (extensions.empty())
+    {
+        return;
+    }
+
     packageInfo info;
     for (const auto& extension: extensions)
     {
-        system((get<eCompress>(m_archivesType[extension]) + 
-                               filePath).c_str());        
+        // boost format is not thread safe
+        boost::format duplicat = get<eCompress>(m_archivesType[extension]);
+        std::string compress = boost::str(duplicat % filePath);
+        system(compress.c_str());
         std::string fullPath{filePath + extension};
         GetFileInfo(fullPath, info);
         result.insert(pair<string, packageInfo>(
                       fullPath.substr(rootPath.length() + 1), info));
     }
+
+    // info for Package file
+    GetFileInfo(filePath, info);
+    result.insert(pair<string, packageInfo>(
+                  filePath.substr(rootPath.length() + 1), info));
 } 
 
 bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath, 
@@ -153,7 +170,6 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath,
 {
     // iterate in this directory and find all Packages Archives extension
     std::vector<std::string> extensions;
-    std::cout << packagePath.string() << std::endl; 
     for (const auto& directoryFile: directory_iterator(packagePath))
     {
         if (is_regular_file(directoryFile.path()) && directoryFile.path().has_extension())
@@ -161,7 +177,6 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath,
             std::string extension(directoryFile.path().extension().string());
             if (m_archivesType.find(extension) != m_archivesType.end())
             {
-                std::cout << "Ext" << directoryFile.path().string() << std::endl;
                 extensions.push_back(std::move(extension));
             }
         }
@@ -170,39 +185,36 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath,
     // no package files
     if (extensions.empty())
     {
-        return true;
+        return false;
     }
 
     path filePath(packagePath / m_packages);
-    std::cout << (get<eDecompress>(m_archivesType[extensions[0]]) + 
-                filePath.string() + 
-                extensions[0]) << std::endl;
-    if (system((get<eDecompress>(m_archivesType[extensions[0]]) + 
-                filePath.string() + 
-                extensions[0]).c_str()))
+    // boost format is not thread safe
+    boost::format duplicat = get<eDecompress>(m_archivesType[extensions[0]]);
+    std::string decompress = boost::str(duplicat % filePath.string());
+    if (system(decompress.c_str()))
     {
         cout << "Modified:" << (filePath.string() + extensions[0]) << " Failed" << endl;
         return false;
     }
-
-    cout << "Unzip:" << (filePath.string() + extensions[0]) << " Finished" << endl;
 
     if (!exists(filePath))
     {
         cout << absolute(filePath) << " not exist" << endl;
         return false;
     }
+
     if (boost::filesystem::is_empty(filePath))
     {
         //restore
-        RestoreArchive(filePath.string(), rootPath, extensions, result);
+        //RestoreArchive(filePath.string(), rootPath, extensions, result);
         return false;
     }
 
     std::fstream is(filePath.string());
     string line;
     bool find = false;
-    boost::regex e ("^Package: (.*)");
+    static boost::regex e ("^Package: (.*)");
     while(getline(is, line))
     {
         boost::smatch match;
@@ -262,11 +274,13 @@ bool DataLoad::ChangePackageFile(const boost::filesystem::path &packagePath,
             }
         }
     }
+
     if (!find)
     {
         cout << "Packages not find in " 
-        <<  absolute(packagePath.parent_path())
-        << " directory" << endl;
+             <<  absolute(packagePath.parent_path())
+             << " directory" << endl;
+        return false;
     }
     RestoreArchive(filePath.string(), rootPath, extensions, result);
 
@@ -277,10 +291,16 @@ bool DataLoad::ChangeReleaseFile(const boost::filesystem::path& rootPath,
                                  packageMap &result)
 {
     path releasePath(rootPath / m_releaseName);
+    path inReleasePath(rootPath / m_inRelease);
     if (!exists(releasePath) || boost::filesystem::is_empty(releasePath))
     {
         cout << absolute(releasePath) << " not exists." << endl;
         return false;
+    }
+
+    if (exists(inReleasePath))
+    {
+        boost::filesystem::remove(inReleasePath);
     }
 
     std::fstream is(releasePath.string());
@@ -338,7 +358,7 @@ void DataLoad::Worker()
     
         }
         path versionPath(version);
-        cout << "Thread: " << boost::this_thread::get_id() << " start" << endl;
+        //cout << "Thread: " << boost::this_thread::get_id() << " start" << endl;
         if (!exists(versionPath))
         {
             cout << versionPath << " not exists." << endl;
@@ -346,26 +366,40 @@ void DataLoad::Worker()
         }
         boost::regex findPackages("Packages..*");
         packageMap packageHashs;
-        for(boost::filesystem::recursive_directory_iterator file(versionPath);
-                file != boost::filesystem::recursive_directory_iterator();
-                ++file )
+        using boost::filesystem::recursive_directory_iterator; 
+        using boost::filesystem::directory_iterator; 
+        for(recursive_directory_iterator file(versionPath);
+            file != recursive_directory_iterator(); ++file)
         {
-            if (boost::regex_match(file->path().filename().string(), 
+            // delete folder by-hash
+            if (file->path().filename() == m_hashDirectory)
+            {
+                // no enter in folder
+                file.no_push();
+                // delete by-hash folder
+                boost::filesystem::remove_all(file->path());
+                continue;
+            }
+            
+            if (boost::filesystem::is_regular_file(file->path()) && 
+                boost::regex_match(file->path().filename().string(), 
                                    findPackages))
             {
-                cout << file->path().string()
-                        .substr(versionPath.string().length() + 1) << endl;
-                cout << file->path().root_path() << endl;
-                cout << file->path().relative_path() << endl;
                 ChangePackageFile(file->path().parent_path(), 
                                   versionPath.string(), packageHashs);
+                // delete folder by-hash
+                for (directory_iterator dir(file->path().parent_path()); 
+                     dir != directory_iterator(); ++dir)
+                {
+                    if (dir->path().filename() == m_hashDirectory)
+                    {
+                        boost::filesystem::remove_all(dir->path());
+                        break;
+                    }
+                }
+
                 file.pop();
             }
-        }
-        if (packageHashs.empty())
-        {
-            cout << "Nothing change" << endl;
-            return;
         }
         for(const auto& a: packageHashs)
         {
@@ -407,7 +441,7 @@ void DataLoad::GiveWorkerJob()
     {
         m_workQueue.push(dir.path().string());
     }
-    for (unsigned int i = 0; i < (boost::thread::hardware_concurrency() / 2u);
+    for (unsigned int i = 0; i < boost::thread::hardware_concurrency();
          ++i)
     {
         m_threads.add_thread(new boost::thread(bind(&DataLoad::Worker, this)));
@@ -419,7 +453,8 @@ int main()
 {
     // first param name Package you wand intercept, 
     // second param path file on what you want intercept
-    std::string packet = "mc_4.7.0-1ubuntu2_i386.deb";
+    std::string packet = "helloworld_1.0-1.deb";
+    //size_t installedSize = 1430;
     DataLoad::fullPackageData test_data{packet, DataLoad::packageInfo{}};
     std::map<std::string, DataLoad::fullPackageData> interceptData;
     interceptData.emplace(std::make_pair(std::string("firefox"), test_data));

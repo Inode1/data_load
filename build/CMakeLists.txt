@@ -14,6 +14,6 @@ file (GLOB HEADER
 	../*.h)
 file (GLOB SOURCE
 	../*.cpp)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wall -Wextra -lpthread")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wpedantic -Wall -Wextra -Werror -lpthread")
 add_executable(data_load ${SOURCE} ${HEADER})
 target_link_libraries(${PROJECT_NAME} ${Boost_LIBRARIES})
